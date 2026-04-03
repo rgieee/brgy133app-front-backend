@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'services/api_service.dart';
 
 void main() {
   runApp(const Barangay133App());
@@ -45,16 +47,56 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final TextEditingController _userController = TextEditingController();
   final TextEditingController _passController = TextEditingController();
+  bool _isLoading = false;
 
-  void _login() {
-    if (_userController.text.isNotEmpty) {
-      addLog("Logged in as ${_userController.text}");
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => MainNavigation(username: _userController.text),
+  Future<void> _login() async {
+    if (_userController.text.isEmpty || _passController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Please enter both username and password"),
         ),
       );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final result = await ApiService.login(
+        _userController.text,
+        _passController.text,
+      );
+
+      if (mounted) {
+        if (result['success'] == true) {
+          addLog("Logged in as ${_userController.text}");
+          if (mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => MainNavigation(
+                  username: _userController.text,
+                  userRole: result['role'] ?? 'Resident',
+                ),
+              ),
+            );
+          }
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result['message'] ?? 'Login failed')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -123,8 +165,19 @@ class _LoginPageState extends State<LoginPage> {
                     backgroundColor: const Color.fromARGB(255, 185, 52, 19),
                     foregroundColor: Colors.white,
                   ),
-                  onPressed: _login,
-                  child: const Text("LOGIN"),
+                  onPressed: _isLoading ? null : _login,
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 24,
+                          width: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white,
+                            ),
+                          ),
+                        )
+                      : const Text("LOGIN"),
                 ),
               ),
               const SizedBox(height: 15),
@@ -148,7 +201,12 @@ class _LoginPageState extends State<LoginPage> {
 
 class MainNavigation extends StatefulWidget {
   final String username;
-  const MainNavigation({super.key, required this.username});
+  final String userRole;
+  const MainNavigation({
+    super.key,
+    required this.username,
+    this.userRole = 'Resident',
+  });
   @override
   State<MainNavigation> createState() => _MainNavigationState();
 }
@@ -362,29 +420,38 @@ class AnnouncementPage extends StatefulWidget {
 }
 
 class _AnnouncementPageState extends State<AnnouncementPage> {
-  final List<Map<String, String>> _allData = [
-    {
-      "title": "Ayuda Distribution",
-      "date": "Feb 24, 2026",
-      "desc": "Regular financial assistance for senior citizens.",
-      "req": "* Senior Citizen ID\n* Brgy Clearance\n* Original ID",
-    },
-    {
-      "title": "Clean Up Drive",
-      "date": "Feb 26, 2026",
-      "desc": "Community cleaning activity to prevent Dengue.",
-      "req": "* Bring broom\n* Comfortable clothes",
-    },
-  ];
-  List<Map<String, String>> _filtered = [];
+  List<Map<String, dynamic>> _announcements = [];
+  List<Map<String, dynamic>> _filtered = [];
+  bool _isLoading = false;
 
   @override
   void initState() {
-    _filtered = List.from(_allData);
     super.initState();
+    _loadAnnouncements();
   }
 
-  void _showDetails(Map<String, String> data) {
+  Future<void> _loadAnnouncements() async {
+    setState(() => _isLoading = true);
+    try {
+      final announcements = await ApiService.getAnnouncements();
+      if (mounted) {
+        setState(() {
+          _announcements = announcements;
+          _filtered = List.from(_announcements);
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading announcements: $e')),
+        );
+      }
+    }
+  }
+
+  void _showDetails(Map<String, dynamic> data) {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -397,22 +464,19 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              data['title']!,
+              data['title'] ?? 'Announcement',
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
-            Text(data['date']!, style: const TextStyle(color: Colors.grey)),
+            Text(
+              data['date_posted'] ?? '',
+              style: const TextStyle(color: Colors.grey),
+            ),
             const Divider(),
             const Text(
               "Details:",
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
-            Text(data['desc']!),
-            const SizedBox(height: 15),
-            const Text(
-              "Requirements:",
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            Text(data['req']!),
+            Text(data['content'] ?? 'No details provided'),
             const SizedBox(height: 20),
           ],
         ),
@@ -428,32 +492,47 @@ class _AnnouncementPageState extends State<AnnouncementPage> {
           padding: const EdgeInsets.all(10),
           child: TextField(
             onChanged: (v) => setState(
-              () => _filtered = _allData
+              () => _filtered = _announcements
                   .where(
-                    (i) => i['title']!.toLowerCase().contains(v.toLowerCase()),
+                    (i) =>
+                        (i['title'] ?? '').toLowerCase().contains(
+                          v.toLowerCase(),
+                        ) ||
+                        (i['content'] ?? '').toLowerCase().contains(
+                          v.toLowerCase(),
+                        ),
                   )
                   .toList(),
             ),
             decoration: const InputDecoration(
-              labelText: 'Search',
+              labelText: 'Search announcements',
               suffixIcon: Icon(Icons.search),
               border: OutlineInputBorder(),
             ),
           ),
         ),
         Expanded(
-          child: ListView.builder(
-            itemCount: _filtered.length,
-            itemBuilder: (context, index) => ListTile(
-              title: Text(_filtered[index]['title']!),
-              subtitle: Text(_filtered[index]['date']!),
-              trailing: TextButton(
-                onPressed: () => _showDetails(_filtered[index]),
-                child: const Text("Read More"),
-              ),
-              leading: const Icon(Icons.campaign, color: Colors.orange),
-            ),
-          ),
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _filtered.isEmpty
+              ? const Center(child: Text('No announcements found'))
+              : RefreshIndicator(
+                  onRefresh: _loadAnnouncements,
+                  child: ListView.builder(
+                    itemCount: _filtered.length,
+                    itemBuilder: (context, index) => ListTile(
+                      title: Text(_filtered[index]['title'] ?? 'Announcement'),
+                      subtitle: Text(
+                        _filtered[index]['date_posted'] ?? 'No date',
+                      ),
+                      trailing: TextButton(
+                        onPressed: () => _showDetails(_filtered[index]),
+                        child: const Text("Read More"),
+                      ),
+                      leading: const Icon(Icons.campaign, color: Colors.orange),
+                    ),
+                  ),
+                ),
         ),
       ],
     );
@@ -515,18 +594,56 @@ class _GarbageAlertPageState extends State<GarbageAlertPage> {
   }
 }
 
-class ActivityHistoryPage extends StatelessWidget {
+class ActivityHistoryPage extends StatefulWidget {
   const ActivityHistoryPage({super.key});
   @override
+  State<ActivityHistoryPage> createState() => _ActivityHistoryPageState();
+}
+
+class _ActivityHistoryPageState extends State<ActivityHistoryPage> {
+  List<Map<String, dynamic>> _history = [];
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadActivityHistory();
+  }
+
+  Future<void> _loadActivityHistory() async {
+    setState(() => _isLoading = true);
+    try {
+      final history = await ApiService.getActivityHistory();
+      if (mounted) {
+        setState(() {
+          _history = history;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return ListView.builder(
-      itemCount: activityLogs.length,
-      itemBuilder: (context, i) => ListTile(
-        leading: const Icon(Icons.history),
-        title: Text(activityLogs[i]['subtitle']!),
-        subtitle: Text(activityLogs[i]['time']!),
-      ),
-    );
+    return _isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : _history.isEmpty
+        ? const Center(child: Text('No activity history'))
+        : RefreshIndicator(
+            onRefresh: _loadActivityHistory,
+            child: ListView.builder(
+              itemCount: _history.length,
+              itemBuilder: (context, i) => ListTile(
+                leading: const Icon(Icons.history),
+                title: Text(_history[i]['action_type'] ?? 'Unknown action'),
+                subtitle: Text(_history[i]['timestamp'] ?? 'No timestamp'),
+              ),
+            ),
+          );
   }
 }
 
@@ -540,6 +657,27 @@ class _FeedbackPageState extends State<FeedbackPage> {
   final _subjController = TextEditingController();
   final _msgController = TextEditingController();
   String _fileName = "None";
+
+  Future<void> _pickFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        allowMultiple: false,
+      );
+
+      if (result != null) {
+        setState(() {
+          _fileName = result.files.single.name;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Error picking file: $e")));
+      }
+    }
+  }
 
   void _submitFeedback() {
     if (_msgController.text.isEmpty || _subjController.text.isEmpty) {
@@ -564,13 +702,38 @@ class _FeedbackPageState extends State<FeedbackPage> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              _showSuccessMessage();
+              _sendFeedbackToBackend();
             },
             child: const Text("YES"),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _sendFeedbackToBackend() async {
+    try {
+      final result = await ApiService.submitFeedback(
+        subject: _subjController.text,
+        content: _msgController.text,
+      );
+
+      if (mounted) {
+        if (result['success'] == true) {
+          _showSuccessMessage();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result['message'] ?? 'Failed to submit')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
   }
 
   void _showSuccessMessage() {
@@ -590,7 +753,9 @@ class _FeedbackPageState extends State<FeedbackPage> {
                 addLog("Feedback Sent: ${_subjController.text}");
                 _subjController.clear();
                 _msgController.clear();
-                setState(() => _fileName = "None");
+                setState(() {
+                  _fileName = "None";
+                });
                 Navigator.pop(context);
               },
               child: const Text("OK"),
@@ -618,12 +783,12 @@ class _FeedbackPageState extends State<FeedbackPage> {
           Row(
             children: [
               ElevatedButton.icon(
-                onPressed: () => setState(() => _fileName = "report_file.jpg"),
+                onPressed: _pickFile,
                 icon: const Icon(Icons.attach_file),
                 label: const Text("Attach"),
               ),
               const SizedBox(width: 10),
-              Text(_fileName),
+              Expanded(child: Text(_fileName, overflow: TextOverflow.ellipsis)),
             ],
           ),
           const SizedBox(height: 15),
