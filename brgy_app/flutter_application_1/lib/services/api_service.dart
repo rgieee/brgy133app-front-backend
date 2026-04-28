@@ -1,109 +1,268 @@
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class ApiService {
-  // IP address para sa Android Emulator para maka-konekta sa PC localhost
-  final String baseUrl = "http://10.0.2.2:8000";
-  static String? _token;
+  // Backend URL - Update this to your server address (e.g., http://192.168.1.100:8000 for network)
+  static const String baseUrl = 'http://10.0.2.2:8000';
+  static String? _authToken;
+  static String? _userRole;
+  static int? _userId;
 
-  Future<Map<String, dynamic>> loginUser(String user, String pass) async {
+  // Getters
+  static String? get authToken => _authToken;
+  static String? get userRole => _userRole;
+  static int? get userId => _userId;
+
+  // Setters
+  static void setToken(String token) => _authToken = token;
+  static void setUserRole(String role) => _userRole = role;
+  static void setUserId(int id) => _userId = id;
+
+  // Clear session on logout
+  static void clearSession() {
+    _authToken = null;
+    _userRole = null;
+    _userId = null;
+  }
+
+  // Build headers with auth token
+  static Map<String, String> _getHeaders({bool includeAuth = true}) {
+    final headers = {'Content-Type': 'application/json'};
+    if (includeAuth && _authToken != null) {
+      headers['Authorization'] = 'Bearer $_authToken';
+    }
+    return headers;
+  }
+
+  // ============================================
+  // AUTHENTICATION
+  // ============================================
+
+  /// Login with username and password
+  static Future<Map<String, dynamic>> login(
+    String username,
+    String password,
+  ) async {
     try {
-      debugPrint("--- LOGIN ATTEMPT ---");
-      debugPrint("URL: $baseUrl/api/login/");
-
-      final response = await http.post(
-        Uri.parse('$baseUrl/api/login/'),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"username": user, "password": pass}),
-      );
-
-      debugPrint("Status Code: ${response.statusCode}");
-      debugPrint("Response Body: ${response.body}");
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/login/'),
+            headers: _getHeaders(includeAuth: false),
+            body: jsonEncode({'username': username, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        _token = data['access_token'];
-        return {'status': 'success', 'data': data};
-      } else if (response.statusCode == 401) {
-        return {
-          'status': 'error',
-          'message': 'Mali ang username o password (401)',
-        };
-      } else if (response.statusCode == 422) {
-        return {
-          'status': 'error',
-          'message': 'Data format error sa request (422)',
-        };
+        _authToken = data['access_token'];
+        _userRole = data['role'];
+        _userId = data['user_id'];
+        return {'success': true, ...data};
       } else {
         return {
-          'status': 'error',
-          'message': 'Server error: ${response.statusCode}',
+          'success': false,
+          'message': 'Invalid username or password',
+          'statusCode': response.statusCode,
         };
       }
     } catch (e) {
-      debugPrint("Connection Error: $e");
-      return {
-        'status': 'error',
-        'message':
-            'Hindi makakonekta sa server. Siguraduhing running ang Uvicorn.',
-      };
+      return {'success': false, 'message': 'Connection error: $e'};
     }
   }
 
-  Future<List<dynamic>> getAnnouncements() async {
-    if (_token == null) {
-      debugPrint("No token found. Login first.");
-      return [];
-    }
+  // ============================================
+  // ANNOUNCEMENTS (FR4 & FR9)
+  // ============================================
 
+  /// Fetch all announcements
+  static Future<List<Map<String, dynamic>>> getAnnouncements() async {
     try {
-      final response = await http.get(
-        Uri.parse('$baseUrl/api/announcements/'),
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer $_token",
-        },
-      );
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/announcements/'), headers: _getHeaders())
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
       }
-      debugPrint("Failed to load announcements: ${response.statusCode}");
       return [];
     } catch (e) {
-      debugPrint("Announcement Error: $e");
       return [];
     }
   }
 
-  Future<Map<String, dynamic>> submitFeedback(
-    String subject,
-    String content,
-  ) async {
-    if (_token == null) {
-      debugPrint("No token found. Login first.");
-      return {'status': 'error', 'message': 'Not logged in'};
-    }
-
+  /// Create announcement (Official+ only)
+  static Future<Map<String, dynamic>> createAnnouncement({
+    required String title,
+    required String content,
+    required String datePosted,
+  }) async {
     try {
-      final response = await http.post(
-        Uri.parse('$baseUrl/api/feedback/'),
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer $_token",
-        },
-        body: jsonEncode({"subject": subject, "content": content}),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/announcements/'),
+            headers: _getHeaders(),
+            body: jsonEncode({
+              'title': title,
+              'content': content,
+              'date_posted': datePosted,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 201) {
+        return {'success': true, ...jsonDecode(response.body)};
+      }
+      return {'success': false, 'message': 'Failed to create announcement'};
+    } catch (e) {
+      return {'success': false, 'message': 'Error: $e'};
+    }
+  }
+
+  // ============================================
+  // FEEDBACK & COMPLAINTS (FR5 & FR10)
+  // ============================================
+
+  /// Submit feedback
+  static Future<Map<String, dynamic>> submitFeedback({
+    required String subject,
+    required String content,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/feedback/'),
+            headers: _getHeaders(),
+            body: jsonEncode({'subject': subject, 'content': content}),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 201) {
+        return {'success': true, ...jsonDecode(response.body)};
+      }
+      return {'success': false, 'message': 'Failed to submit feedback'};
+    } catch (e) {
+      return {'success': false, 'message': 'Error: $e'};
+    }
+  }
+
+  /// Get all feedback (Official+ only)
+  static Future<List<Map<String, dynamic>>> getFeedback() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/feedback/'), headers: _getHeaders())
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        return {'status': 'success'};
-      } else {
-        return {'status': 'error', 'message': 'Failed to submit feedback'};
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
       }
+      return [];
     } catch (e) {
-      debugPrint("Feedback Error: $e");
-      return {'status': 'error', 'message': 'Connection error'};
+      return [];
+    }
+  }
+
+  // ============================================
+  // NOTIFICATIONS & ALERTS
+  // ============================================
+
+  /// Get notifications/alerts
+  static Future<List<Map<String, dynamic>>> getNotifications() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/notifications/'), headers: _getHeaders())
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ============================================
+  // ACTIVITY HISTORY (FR16)
+  // ============================================
+
+  /// Get user's activity history
+  static Future<List<Map<String, dynamic>>> getActivityHistory() async {
+    try {
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/api/activity-history/'),
+            headers: _getHeaders(),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ============================================
+  // RESIDENTS (FR2 - Super Admin only)
+  // ============================================
+
+  /// Get all residents
+  static Future<List<Map<String, dynamic>>> getResidents() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/residents/'), headers: _getHeaders())
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ============================================
+  // REPORTS (Official+ only)
+  // ============================================
+
+  /// Get all reports
+  static Future<List<Map<String, dynamic>>> getReports() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/reports/'), headers: _getHeaders())
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        List<dynamic> data = jsonDecode(response.body);
+        return data.cast<Map<String, dynamic>>();
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // ============================================
+  // HEALTH CHECK
+  // ============================================
+
+  /// Check if backend is online
+  static Future<bool> healthCheck() async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/'))
+          .timeout(const Duration(seconds: 5));
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
     }
   }
 }

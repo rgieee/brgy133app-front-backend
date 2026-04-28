@@ -28,4 +28,6 @@ flutter_launcher_icons:
 flutter:
   uses-material-design: true
   assets:
-    - assets/logo/
+    - assets/image/brgy_logo.jpg
+    - assets/image/barangay133bg.png
+    - assets/image/barangay133bg2.jpg
